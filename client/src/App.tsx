@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Activity,
   Calendar,
@@ -73,6 +73,11 @@ interface AdminSettings {
   promoCode: string;
   promoDiscountPercent: number;
   adminPasscode?: string;
+  bookingStartDate: string;
+  bookingDaysToShow: number;
+  slotStartTime: string;
+  slotEndTime: string;
+  slotIntervalMinutes: number;
 }
 
 interface Review {
@@ -133,10 +138,61 @@ const FACILITY_EXTRAS: Record<string, FacilityDetails> = {
 
 const API_BASE = 'http://localhost:5000/api';
 
-const TIME_SLOTS = [
-  '08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00',
-  '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00'
-];
+const todayIso = () => new Date().toISOString().split('T')[0];
+
+const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
+  globalDiscountPercent: 0,
+  promoCode: 'WELCOME10',
+  promoDiscountPercent: 10,
+  adminPasscode: 'Nive@123',
+  bookingStartDate: todayIso(),
+  bookingDaysToShow: 7,
+  slotStartTime: '08:00',
+  slotEndTime: '22:00',
+  slotIntervalMinutes: 60
+};
+
+const getIsAdminRoute = () => window.location.pathname.replace(/\/$/, '').endsWith('/admin') || window.location.hash === '#/admin';
+
+const timeToMinutes = (time: string) => {
+  const [hours, minutes] = time.split(':').map(Number);
+  return (hours * 60) + minutes;
+};
+
+const minutesToTime = (totalMinutes: number) => {
+  const hours = Math.floor(totalMinutes / 60).toString().padStart(2, '0');
+  const minutes = (totalMinutes % 60).toString().padStart(2, '0');
+  return `${hours}:${minutes}`;
+};
+
+const generateTimeSlots = (settings: AdminSettings) => {
+  const start = timeToMinutes(settings.slotStartTime || DEFAULT_ADMIN_SETTINGS.slotStartTime);
+  const end = timeToMinutes(settings.slotEndTime || DEFAULT_ADMIN_SETTINGS.slotEndTime);
+  const interval = Math.max(15, Number(settings.slotIntervalMinutes) || DEFAULT_ADMIN_SETTINGS.slotIntervalMinutes);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return [];
+
+  const slots: string[] = [];
+  for (let current = start; current <= end; current += interval) {
+    slots.push(minutesToTime(current));
+  }
+  return slots;
+};
+
+const generateBookingDays = (settings: AdminSettings) => {
+  const tempDays = [];
+  const startDate = new Date(`${settings.bookingStartDate || todayIso()}T00:00:00`);
+  const daysToShow = Math.max(1, Math.min(31, Number(settings.bookingDaysToShow) || 7));
+
+  for (let i = 0; i < daysToShow; i++) {
+    const d = new Date(startDate);
+    d.setDate(startDate.getDate() + i);
+    const dateStr = d.toISOString().split('T')[0];
+    const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
+    const dayNum = d.getDate();
+    tempDays.push({ dateStr, dayName, dayNum });
+  }
+  return tempDays;
+};
 
 const PHONE_CODES = [
   { code: '+91', country: 'IN', label: '🇮🇳 India (+91)' },
@@ -147,26 +203,10 @@ const PHONE_CODES = [
 ];
 
 export default function App() {
-  // Helper to generate 7-day window starting today
-  const generateDaysOfWeek = () => {
-    const tempDays = [];
-    const today = new Date();
-    for (let i = 0; i < 7; i++) {
-      const d = new Date();
-      d.setDate(today.getDate() + i);
-      const dateStr = d.toISOString().split('T')[0];
-      const dayName = d.toLocaleDateString('en-US', { weekday: 'short' });
-      const dayNum = d.getDate();
-      tempDays.push({ dateStr, dayName, dayNum });
-    }
-    return tempDays;
-  };
-
   // --- Core States ---
   const [resources, setResources] = useState<Resource[]>([]);
   const [activeResource, setActiveResource] = useState<string>('');
-  const [daysOfWeek] = useState<{ dateStr: string; dayName: string; dayNum: number }[]>(generateDaysOfWeek());
-  const [activeDate, setActiveDate] = useState<string>(() => generateDaysOfWeek()[0]?.dateStr || '');
+  const [activeDate, setActiveDate] = useState<string>(todayIso());
   const [selectedSlots, setSelectedSlots] = useState<string[]>([]);
   const [userMetadata, setUserMetadata] = useState<UserMetadata | null>(() => {
     const saved = localStorage.getItem('user_profile');
@@ -182,7 +222,7 @@ export default function App() {
   const [bookings, setBookings] = useState<Booking[]>([]);
 
   // --- Hash Routing State ---
-  const [currentHash, setCurrentHash] = useState<string>(window.location.hash);
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(getIsAdminRoute());
   const [activeTab, setActiveTab] = useState<'book' | 'mybookings'>('book');
 
   // --- Guest Customer States ---
@@ -281,10 +321,7 @@ export default function App() {
   const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
   const [adminBookings, setAdminBookings] = useState<Booking[]>([]);
   const [adminSettings, setAdminSettings] = useState<AdminSettings>({
-    globalDiscountPercent: 0,
-    promoCode: 'WELCOME10',
-    promoDiscountPercent: 10,
-    adminPasscode: 'Nive@123'
+    ...DEFAULT_ADMIN_SETTINGS
   });
   const [passcode, setPasscode] = useState('');
   const [passcodeError, setPasscodeError] = useState('');
@@ -292,31 +329,42 @@ export default function App() {
   const [editingFacility, setEditingFacility] = useState<Resource | null>(null);
   const [promoCodeInput, setPromoCodeInput] = useState('');
   const [activeSettings, setActiveSettings] = useState<AdminSettings>({
-    globalDiscountPercent: 0,
-    promoCode: 'WELCOME10',
-    promoDiscountPercent: 10,
-    adminPasscode: 'Nive@123'
+    ...DEFAULT_ADMIN_SETTINGS
   });
+  const daysOfWeek = useMemo(() => generateBookingDays(activeSettings), [activeSettings]);
+  const timeSlots = useMemo(() => generateTimeSlots(activeSettings), [activeSettings]);
 
   // Hash listener effect
   useEffect(() => {
-    const handleHashChange = () => {
-      setCurrentHash(window.location.hash);
+    const handleRouteChange = () => {
+      setIsAdminRoute(getIsAdminRoute());
       // Reset steps if switching views
       setBookingStep('facility');
       setBookingSuccess(null);
     };
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hashchange', handleRouteChange);
+    window.addEventListener('popstate', handleRouteChange);
+    return () => {
+      window.removeEventListener('hashchange', handleRouteChange);
+      window.removeEventListener('popstate', handleRouteChange);
+    };
   }, []);
 
   useEffect(() => {
     // Load active settings on startup
     fetch(`${API_BASE}/admin/settings`)
       .then(res => res.json())
-      .then(data => setActiveSettings(data))
+      .then(data => setActiveSettings({ ...DEFAULT_ADMIN_SETTINGS, ...data }))
       .catch(err => console.error("Error loading settings", err));
   }, []);
+
+  useEffect(() => {
+    if (daysOfWeek.length === 0) return;
+    if (!daysOfWeek.some(day => day.dateStr === activeDate)) {
+      setActiveDate(daysOfWeek[0].dateStr);
+      setSelectedSlots([]);
+    }
+  }, [activeSettings, activeDate, daysOfWeek]);
 
   // Fetch facilities/resources
   useEffect(() => {
@@ -355,7 +403,7 @@ export default function App() {
   }, [activeResource, activeDate, bookingSuccess]);
 
   // Fetch Admin Data
-  const isAdminView = currentHash === '#/admin' && userMetadata?.role === 'Admin';
+  const isAdminView = isAdminRoute && userMetadata?.role === 'Admin';
   useEffect(() => {
     if (!isAdminView) return;
 
@@ -371,7 +419,7 @@ export default function App() {
 
     fetch(`${API_BASE}/admin/settings`)
       .then(res => res.json())
-      .then(data => setAdminSettings(data))
+      .then(data => setAdminSettings({ ...DEFAULT_ADMIN_SETTINGS, ...data }))
       .catch(err => console.error("Error loading admin settings", err));
   }, [isAdminView]);
 
@@ -571,7 +619,7 @@ export default function App() {
     setBookingSuccess(null);
     // If Admin, clear hash
     if (userMetadata?.role === 'Admin') {
-      window.location.hash = '';
+      goHome();
     }
   };
 
@@ -676,6 +724,12 @@ export default function App() {
         body: JSON.stringify(adminSettings)
       });
       if (res.ok) {
+        const result = await res.json();
+        if (result.settings) {
+          const mergedSettings = { ...DEFAULT_ADMIN_SETTINGS, ...result.settings };
+          setAdminSettings(mergedSettings);
+          setActiveSettings(mergedSettings);
+        }
         alert('Settings saved successfully!');
         refreshAdminData();
       } else {
@@ -715,6 +769,14 @@ export default function App() {
     }
   };
 
+  const goHome = () => {
+    window.history.pushState({}, '', '/');
+    window.location.hash = '';
+    setIsAdminRoute(false);
+    setActiveTab('book');
+    setBookingSuccess(null);
+  };
+
   const activeResourceDetails = resources.find(r => r.id === activeResource);
   const hourlyPrice = activeResourceDetails?.price_per_hour || 50.0;
   const isPromoApplied = promoCodeInput.trim().toUpperCase() === activeSettings.promoCode;
@@ -727,18 +789,16 @@ export default function App() {
     <div className="app-container">
       {/* LEFT SIDEBAR NAVIGATION */}
       <aside className="sidebar">
-        <div className="sidebar-brand" onClick={() => { setBookingSuccess(null); window.location.hash = ''; setActiveTab('book'); }}>
+        <div className="sidebar-brand" onClick={goHome}>
           <Activity size={26} color="var(--accent-mint)" />
           <span>GreenPlay Arena</span>
         </div>
 
         <nav className="sidebar-menu">
           <button
-            className={`sidebar-link ${activeTab === 'book' && currentHash !== '#/admin' ? 'active' : ''}`}
+            className={`sidebar-link ${activeTab === 'book' && !isAdminRoute ? 'active' : ''}`}
             onClick={() => {
-              setActiveTab('book');
-              window.location.hash = '';
-              setBookingSuccess(null);
+              goHome();
             }}
           >
             <Calendar size={18} />
@@ -746,10 +806,12 @@ export default function App() {
           </button>
 
           <button
-            className={`sidebar-link ${activeTab === 'mybookings' && currentHash !== '#/admin' ? 'active' : ''}`}
+            className={`sidebar-link ${activeTab === 'mybookings' && !isAdminRoute ? 'active' : ''}`}
             onClick={() => {
               setActiveTab('mybookings');
+              window.history.pushState({}, '', '/');
               window.location.hash = '';
+              setIsAdminRoute(false);
               setBookingSuccess(null);
             }}
           >
@@ -767,7 +829,7 @@ export default function App() {
         </nav>
 
         {/* Sidebar Filters */}
-        {activeTab === 'book' && bookingStep === 'facility' && currentHash !== '#/admin' && (
+        {activeTab === 'book' && bookingStep === 'facility' && !isAdminRoute && (
           <div className="sidebar-filters" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1.5rem', marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <span className="section-label" style={{ margin: 0 }}>Filter Options</span>
             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -825,7 +887,7 @@ export default function App() {
 
       {/* MOBILE HEADER (Only displays on mobile) */}
       <header className="navbar">
-        <div className="nav-brand" onClick={() => { setBookingSuccess(null); window.location.hash = ''; setActiveTab('book'); }}>
+        <div className="nav-brand" onClick={goHome}>
           <Activity size={24} color="var(--accent-mint)" />
           <span>GreenPlay</span>
         </div>
@@ -842,7 +904,7 @@ export default function App() {
       {/* MAIN WRAPPER */}
       <div className="content-wrapper">
         <main className="main-content">
-          {currentHash !== '#/admin' && (
+          {!isAdminRoute && (
             <div className="ticker-wrap">
               <span className="ticker-title">Sports Feed</span>
               <div className="ticker-content">
@@ -876,7 +938,7 @@ export default function App() {
           )}
 
           {/* ADMIN PORTAL FLOW */}
-          {currentHash === '#/admin' ? (
+          {isAdminRoute ? (
             userMetadata?.role === 'Admin' ? (
               // ADMIN CONTROL CENTER
               <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
@@ -1225,6 +1287,76 @@ export default function App() {
 
                         <hr style={{ border: 'none', borderBottom: '1px solid var(--border-color)' }} />
 
+                        <div>
+                          <div className="card-title" style={{ fontSize: '1rem', marginBottom: '1rem' }}>
+                            <Clock size={18} color="var(--accent-mint)" />
+                            <span>Dynamic Booking Timings</span>
+                          </div>
+
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1rem' }}>
+                            <div className="form-group">
+                              <label className="form-label">Booking Start Date</label>
+                              <input
+                                type="date"
+                                className="form-control"
+                                value={adminSettings.bookingStartDate || todayIso()}
+                                onChange={(e) => setAdminSettings({ ...adminSettings, bookingStartDate: e.target.value })}
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label className="form-label">Visible Days</label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="31"
+                                className="form-control"
+                                value={adminSettings.bookingDaysToShow || 7}
+                                onChange={(e) => setAdminSettings({ ...adminSettings, bookingDaysToShow: parseInt(e.target.value, 10) || 7 })}
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label className="form-label">First Slot Time</label>
+                              <input
+                                type="time"
+                                className="form-control"
+                                value={adminSettings.slotStartTime || '08:00'}
+                                onChange={(e) => setAdminSettings({ ...adminSettings, slotStartTime: e.target.value })}
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label className="form-label">Last Slot Time</label>
+                              <input
+                                type="time"
+                                className="form-control"
+                                value={adminSettings.slotEndTime || '22:00'}
+                                onChange={(e) => setAdminSettings({ ...adminSettings, slotEndTime: e.target.value })}
+                              />
+                            </div>
+
+                            <div className="form-group">
+                              <label className="form-label">Slot Interval (minutes)</label>
+                              <input
+                                type="number"
+                                min="15"
+                                max="240"
+                                step="15"
+                                className="form-control"
+                                value={adminSettings.slotIntervalMinutes || 60}
+                                onChange={(e) => setAdminSettings({ ...adminSettings, slotIntervalMinutes: parseInt(e.target.value, 10) || 60 })}
+                              />
+                            </div>
+                          </div>
+
+                          <small style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', display: 'block' }}>
+                            These values control which booking dates and time slots customers can choose.
+                          </small>
+                        </div>
+
+                        <hr style={{ border: 'none', borderBottom: '1px solid var(--border-color)' }} />
+
                         <div className="form-group">
                           <label className="form-label">Change Admin Passcode</label>
                           <input
@@ -1293,7 +1425,7 @@ export default function App() {
                       type="button"
                       className="btn btn-secondary"
                       style={{ flex: 1 }}
-                      onClick={() => { window.location.hash = ''; }}
+                      onClick={goHome}
                     >
                       Exit to App
                     </button>
@@ -1635,7 +1767,7 @@ export default function App() {
                               </div>
 
                               <div className="slot-grid">
-                                {TIME_SLOTS.map((slot) => {
+                                {timeSlots.map((slot) => {
                                   const isOccupied = bookings.some(b => b.slot_time === slot && b.status !== 'Cancelled');
                                   const isSelected = selectedSlots.includes(slot);
 
@@ -1662,6 +1794,11 @@ export default function App() {
                                   );
                                 })}
                               </div>
+                              {timeSlots.length === 0 && (
+                                <p style={{ color: 'var(--state-danger)', fontSize: '0.85rem', marginTop: '1rem' }}>
+                                  No slots are available with the current admin schedule settings.
+                                </p>
+                              )}
                             </div>
                           </div>
 
@@ -2046,7 +2183,7 @@ export default function App() {
         </main>
 
         {/* Global Footer (only in Customer view) */}
-        {currentHash !== '#/admin' && (
+        {!isAdminRoute && (
           <footer className="footer">
             <div className="footer-content">
               <div className="footer-brand">

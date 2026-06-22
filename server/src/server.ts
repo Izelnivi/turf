@@ -1,15 +1,33 @@
 import express from 'express';
 import cors from 'cors';
-import { getDb, initDb } from './db';
+import { Database, getDb, initDb } from './db';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Admin Settings State (in-memory for local environment simplicity)
-let globalDiscountPercent = 0.0;
-let globalPromoCode = 'WELCOME10';
-let globalPromoDiscountPercent = 10.0;
-let adminPasscode = 'Nive@123';
+interface AdminSettings {
+  globalDiscountPercent: number;
+  promoCode: string;
+  promoDiscountPercent: number;
+  adminPasscode: string;
+  bookingStartDate: string;
+  bookingDaysToShow: number;
+  slotStartTime: string;
+  slotEndTime: string;
+  slotIntervalMinutes: number;
+}
+
+const defaultAdminSettings: AdminSettings = {
+  globalDiscountPercent: 0,
+  promoCode: 'WELCOME10',
+  promoDiscountPercent: 10,
+  adminPasscode: 'Nive@123',
+  bookingStartDate: new Date().toISOString().split('T')[0],
+  bookingDaysToShow: 7,
+  slotStartTime: '08:00',
+  slotEndTime: '22:00',
+  slotIntervalMinutes: 60
+};
 
 app.use(cors());
 app.use(express.json());
@@ -19,6 +37,87 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
+
+function toNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function timeToMinutes(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return (hours * 60) + minutes;
+}
+
+function isDateWithinBookingWindow(date: string, settings: AdminSettings): boolean {
+  const requested = new Date(`${date}T00:00:00`).getTime();
+  const start = new Date(`${settings.bookingStartDate}T00:00:00`).getTime();
+  const end = start + ((settings.bookingDaysToShow - 1) * 24 * 60 * 60 * 1000);
+  return requested >= start && requested <= end;
+}
+
+function isSlotAllowed(slotTime: string, settings: AdminSettings): boolean {
+  const slot = timeToMinutes(slotTime);
+  const start = timeToMinutes(settings.slotStartTime);
+  const end = timeToMinutes(settings.slotEndTime);
+  return slot >= start && slot <= end && ((slot - start) % settings.slotIntervalMinutes === 0);
+}
+
+async function getAdminSettings(db?: Database): Promise<{ settings: AdminSettings; shouldClose: boolean }> {
+  const shouldClose = !db;
+  const activeDb = db || await getDb();
+  const rows = await activeDb.all<{ key: string; value: string }>('SELECT key, value FROM app_settings');
+  if (shouldClose) {
+    await activeDb.close();
+  }
+  const values = rows.reduce<Record<string, string>>((acc, row) => {
+    acc[row.key] = row.value;
+    return acc;
+  }, {});
+
+  return {
+    shouldClose,
+    settings: {
+      globalDiscountPercent: toNumber(values.globalDiscountPercent, defaultAdminSettings.globalDiscountPercent),
+      promoCode: values.promoCode || defaultAdminSettings.promoCode,
+      promoDiscountPercent: toNumber(values.promoDiscountPercent, defaultAdminSettings.promoDiscountPercent),
+      adminPasscode: values.adminPasscode || defaultAdminSettings.adminPasscode,
+      bookingStartDate: values.bookingStartDate || defaultAdminSettings.bookingStartDate,
+      bookingDaysToShow: Math.max(1, Math.min(31, Math.round(toNumber(values.bookingDaysToShow, defaultAdminSettings.bookingDaysToShow)))),
+      slotStartTime: values.slotStartTime || defaultAdminSettings.slotStartTime,
+      slotEndTime: values.slotEndTime || defaultAdminSettings.slotEndTime,
+      slotIntervalMinutes: Math.max(15, Math.min(240, Math.round(toNumber(values.slotIntervalMinutes, defaultAdminSettings.slotIntervalMinutes))))
+    }
+  };
+}
+
+async function saveAdminSettings(settings: Partial<AdminSettings>): Promise<AdminSettings> {
+  const db = await getDb();
+  try {
+    const normalized: Partial<Record<keyof AdminSettings, string>> = {};
+
+    if (settings.globalDiscountPercent !== undefined) normalized.globalDiscountPercent = String(toNumber(settings.globalDiscountPercent, 0));
+    if (settings.promoCode !== undefined) normalized.promoCode = String(settings.promoCode).trim().toUpperCase();
+    if (settings.promoDiscountPercent !== undefined) normalized.promoDiscountPercent = String(toNumber(settings.promoDiscountPercent, 0));
+    if (settings.adminPasscode !== undefined && String(settings.adminPasscode).trim() !== '') normalized.adminPasscode = String(settings.adminPasscode).trim();
+    if (settings.bookingStartDate !== undefined) normalized.bookingStartDate = String(settings.bookingStartDate);
+    if (settings.bookingDaysToShow !== undefined) normalized.bookingDaysToShow = String(Math.max(1, Math.min(31, Math.round(toNumber(settings.bookingDaysToShow, 7)))));
+    if (settings.slotStartTime !== undefined) normalized.slotStartTime = String(settings.slotStartTime);
+    if (settings.slotEndTime !== undefined) normalized.slotEndTime = String(settings.slotEndTime);
+    if (settings.slotIntervalMinutes !== undefined) normalized.slotIntervalMinutes = String(Math.max(15, Math.min(240, Math.round(toNumber(settings.slotIntervalMinutes, 60)))));
+
+    for (const [key, value] of Object.entries(normalized)) {
+      await db.run(
+        'INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+        [key, value]
+      );
+    }
+
+    const { settings: updated } = await getAdminSettings(db);
+    return updated;
+  } finally {
+    await db.close();
+  }
+}
 
 // Endpoint: Get all resources (facilities)
 app.get('/api/resources', async (req, res) => {
@@ -208,6 +307,7 @@ app.post('/api/bookings', async (req, res) => {
   }
 
   // Validate bookings formats
+  const settingsForValidation = (await getAdminSettings()).settings;
   for (const b of bookings) {
     if (!b.resource_id || !b.date || !b.slot_time) {
       return res.status(400).json({ error: 'Each booking must specify resource_id, date, and slot_time' });
@@ -219,6 +319,12 @@ app.post('/api/bookings', async (req, res) => {
     const slotRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
     if (!slotRegex.test(b.slot_time)) {
       return res.status(400).json({ error: `Invalid slot_time format in booking: ${b.slot_time}` });
+    }
+    if (!isDateWithinBookingWindow(b.date, settingsForValidation)) {
+      return res.status(400).json({ error: `Booking date ${b.date} is outside the active booking window` });
+    }
+    if (!isSlotAllowed(b.slot_time, settingsForValidation)) {
+      return res.status(400).json({ error: `Slot ${b.slot_time} is outside the active booking hours` });
     }
   }
 
@@ -283,9 +389,9 @@ app.post('/api/bookings', async (req, res) => {
       );
       const hourlyPrice = resInfo ? resInfo.price_per_hour : 50.0;
 
-      // Calculate discount amount based on active promo code or global settings
-      const isPromoApplied = req.body.promoCode === globalPromoCode;
-      const discountPercent = isPromoApplied ? globalPromoDiscountPercent : globalDiscountPercent;
+      const submittedPromo = String(req.body.promoCode || '').trim().toUpperCase();
+      const isPromoApplied = submittedPromo !== '' && submittedPromo === settingsForValidation.promoCode;
+      const discountPercent = isPromoApplied ? settingsForValidation.promoDiscountPercent : settingsForValidation.globalDiscountPercent;
       const discountAmount = hourlyPrice * (discountPercent / 100);
       const finalPrice = hourlyPrice - discountAmount;
 
@@ -331,48 +437,31 @@ app.post('/api/bookings', async (req, res) => {
 
 // --- ADMIN API ENDPOINTS ---
 
-// GET /api/admin/settings: retrieve discount config
-app.get('/api/admin/settings', (req, res) => {
-  res.json({
-    globalDiscountPercent,
-    promoCode: globalPromoCode,
-    promoDiscountPercent: globalPromoDiscountPercent,
-    adminPasscode
-  });
+// GET /api/admin/settings: retrieve discount and schedule config
+app.get('/api/admin/settings', async (req, res) => {
+  const { settings } = await getAdminSettings();
+  res.json(settings);
 });
 
-// POST /api/admin/settings: modify discount config
-app.post('/api/admin/settings', (req, res) => {
-  const { globalDiscountPercent: newDiscount, promoCode: newPromo, promoDiscountPercent: newPromoDiscount, adminPasscode: newPasscode } = req.body;
-
-  if (newDiscount !== undefined) {
-    globalDiscountPercent = parseFloat(newDiscount) || 0.0;
+// POST /api/admin/settings: modify discount and schedule config
+app.post('/api/admin/settings', async (req, res) => {
+  try {
+    const settings = await saveAdminSettings(req.body);
+    res.json({
+      message: 'Admin settings updated successfully',
+      settings
+    });
+  } catch (error) {
+    console.error('Error saving admin settings:', error);
+    res.status(500).json({ error: 'Failed to save admin settings' });
   }
-  if (newPromo !== undefined) {
-    globalPromoCode = String(newPromo).trim();
-  }
-  if (newPromoDiscount !== undefined) {
-    globalPromoDiscountPercent = parseFloat(newPromoDiscount) || 0.0;
-  }
-  if (newPasscode !== undefined && String(newPasscode).trim() !== '') {
-    adminPasscode = String(newPasscode).trim();
-  }
-
-  res.json({
-    message: 'Admin settings updated successfully',
-    settings: {
-      globalDiscountPercent,
-      promoCode: globalPromoCode,
-      promoDiscountPercent: globalPromoDiscountPercent,
-      adminPasscode
-    }
-  });
 });
 
 // POST /api/admin/verify-passcode: verify authorization passcode
-app.post('/api/admin/verify-passcode', (req, res) => {
+app.post('/api/admin/verify-passcode', async (req, res) => {
   const { passcode } = req.body;
-  if (passcode === adminPasscode) {
+  const { settings } = await getAdminSettings();
+  if (passcode === settings.adminPasscode) {
     res.json({ success: true });
   } else {
     res.status(401).json({ error: 'Invalid passcode. Authorization denied.' });

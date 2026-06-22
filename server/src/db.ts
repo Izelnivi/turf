@@ -52,8 +52,10 @@ function convertSql(sql: string): string {
     newSql = 'BEGIN';
   }
 
-  // Append RETURNING id to INSERT statements to fetch generated primary keys
-  if (newSql.trim().toUpperCase().startsWith('INSERT INTO') && !newSql.toUpperCase().includes('RETURNING')) {
+  // Append RETURNING id only where callers need generated numeric IDs.
+  const upperSql = newSql.trim().toUpperCase();
+  const needsGeneratedId = upperSql.startsWith('INSERT INTO USERS') || upperSql.startsWith('INSERT INTO BOOKINGS');
+  if (needsGeneratedId && !upperSql.includes('RETURNING')) {
     newSql += ' RETURNING id';
   }
 
@@ -195,6 +197,11 @@ export async function initDb(): Promise<void> {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       UNIQUE(resource_id, date, slot_time)
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   // --- Run Safe migrations on existing tables ---
@@ -222,6 +229,25 @@ export async function initDb(): Promise<void> {
     await db.run("ALTER TABLE bookings ADD COLUMN discount_applied REAL DEFAULT 0.0");
     console.log("Migration: Added discount_applied to bookings table");
   } catch (e) {}
+
+  const defaultSettings: Record<string, string> = {
+    globalDiscountPercent: '0',
+    promoCode: 'WELCOME10',
+    promoDiscountPercent: '10',
+    adminPasscode: 'Nive@123',
+    bookingStartDate: new Date().toISOString().split('T')[0],
+    bookingDaysToShow: '7',
+    slotStartTime: '08:00',
+    slotEndTime: '22:00',
+    slotIntervalMinutes: '60'
+  };
+
+  for (const [key, value] of Object.entries(defaultSettings)) {
+    await db.run(
+      'INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING',
+      [key, value]
+    );
+  }
 
   // Seed default resources if empty
   const resourcesCount = await db.get<{ count: number }>('SELECT count(*) as count FROM resources');
