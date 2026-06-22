@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Production builds
+client/dist/
+server/dist/
+
+# Local databases
+server/database.sqlite
+
+# Environment configuration secrets
+.env
+server/.env
+*.env.local
+
+# IDE and system files
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db
