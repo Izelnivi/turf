@@ -182,3 +182,27 @@
     border-right-color: var(--border);
   }
 }
+
+/* Login overlay styles */
+.login-overlay {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.login-card .form-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+}
+.login-card .form-control {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-h);
+}
+.login-card .btn { padding: 0.6rem 0.8rem; }
+
+.login-card .form-group { margin-bottom: 0.5rem; }
+.login-card .form-control:disabled { opacity: 0.6; }

@@ -608,6 +608,76 @@ export default function App() {
     }
   };
 
+  // Simple customer login (required before booking)
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verificationError, setVerificationError] = useState<string | null>(null);
+
+  const verifyCustomerOnServer = async (name: string, phone: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/verify-customer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, phone })
+      });
+      if (!res.ok) return false;
+      const data = await res.json();
+      return Boolean(data?.verified);
+    } catch (err) {
+      return false;
+    }
+  };
+
+  const handleCustomerLogin = async (e?: React.FormEvent, forceGuest = false) => {
+    if (e) e.preventDefault();
+    setVerificationError(null);
+
+    if (forceGuest) {
+      const profile: UserMetadata = {
+        name: guestName && guestName.trim() ? guestName.trim() : 'Guest User',
+        phone: guestPhone.trim() || '',
+        phoneCode: guestPhoneCode,
+        dob: '2000-01-01',
+        gender: 'Other',
+        role: 'User'
+      };
+      localStorage.setItem('user_profile', JSON.stringify(profile));
+      setUserMetadata(profile);
+      return;
+    }
+
+    const errors: Record<string, string> = {};
+    if (!guestName.trim() || guestName.trim().length < 2) {
+      errors.name = 'Please enter your full name (min 2 chars)';
+    }
+    if (!guestPhone.trim() || !/^[0-9\s\-()]{7,15}$/.test(guestPhone.trim())) {
+      errors.phone = 'Please enter a valid phone number';
+    }
+    setGuestErrors(errors);
+    if (Object.keys(errors).length > 0) return;
+
+    // Try optional server-side verification; fall back to local acceptance
+    setIsVerifying(true);
+    const fullPhone = `${guestPhoneCode} ${guestPhone.trim()}`;
+    const verified = await verifyCustomerOnServer(guestName.trim(), fullPhone);
+    setIsVerifying(false);
+
+    if (!verified) {
+      // fallback: accept locally but show a soft warning
+      setVerificationError('Could not verify via server; proceeding as local guest.');
+    }
+
+    const profile: UserMetadata = {
+      name: guestName.trim(),
+      phone: guestPhone.trim(),
+      phoneCode: guestPhoneCode,
+      dob: '2000-01-01',
+      gender: 'Other',
+      role: 'User'
+    };
+    localStorage.setItem('user_profile', JSON.stringify(profile));
+    setUserMetadata(profile);
+  };
+
   // Disconnect guest details
   const handleLogout = () => {
     localStorage.removeItem('user_profile');
@@ -934,6 +1004,44 @@ export default function App() {
             }}>
               <AlertCircle size={20} />
               <span>{fetchError}</span>
+            </div>
+          )}
+
+          {/* CUSTOMER LOGIN OVERLAY (requires login before booking) */}
+          {!isAdminRoute && !userMetadata && (
+            <div className="login-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 4000 }}>
+              <div className="card login-card" style={{ width: 'min(540px, 94%)', padding: '1.5rem', borderRadius: '12px' }}>
+                <h2 style={{ marginTop: 0, marginBottom: '0.25rem' }}>Welcome — Please Sign In</h2>
+                <p style={{ marginTop: 0, marginBottom: '1rem', color: 'var(--text-secondary)' }}>Enter your name and phone to continue booking slots.</p>
+
+                <form onSubmit={handleCustomerLogin} style={{ display: 'grid', gap: '0.75rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Full name</label>
+                    <input className="form-control" value={guestName} onChange={(e) => setGuestName(e.target.value)} placeholder="e.g., Priya Kumar" />
+                    {guestErrors.name && <div style={{ color: 'var(--state-error)', fontSize: '0.85rem' }}>{guestErrors.name}</div>}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ minWidth: '120px' }}>
+                      <label className="form-label">Code</label>
+                      <select className="form-control" value={guestPhoneCode} onChange={(e) => setGuestPhoneCode(e.target.value)}>
+                        {PHONE_CODES.map(p => <option key={p.code} value={p.code}>{p.label}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label className="form-label">Phone</label>
+                      <input className="form-control" value={guestPhone} onChange={(e) => setGuestPhone(e.target.value)} placeholder="9876543210" />
+                      {guestErrors.phone && <div style={{ color: 'var(--state-error)', fontSize: '0.85rem' }}>{guestErrors.phone}</div>}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem', alignItems: 'center' }}>
+                    <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={isVerifying}>{isVerifying ? 'Verifying…' : 'Continue to Booking'}</button>
+                    <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => { setGuestName('Guest User'); setGuestPhone(''); handleCustomerLogin(undefined, true); }}>Skip / Quick Guest</button>
+                  </div>
+                  {verificationError && <div style={{ color: 'var(--state-warning)', marginTop: '0.5rem' }}>{verificationError}</div>}
+                </form>
+              </div>
             </div>
           )}
 
