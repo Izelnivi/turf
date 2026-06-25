@@ -143,7 +143,7 @@ app.get('/api/bookings', async (req, res) => {
   try {
     const db = await getDb();
     const bookings = await db.all(
-      `SELECT b.id, b.resource_id, b.date, b.slot_time, u.name as user_name 
+      `SELECT b.id, b.resource_id, b.date, b.slot_time, b.status, u.name as user_name 
        FROM bookings b 
        JOIN users u ON b.user_id = u.id 
        WHERE b.resource_id = ? AND b.date >= ? AND b.date <= ?`,
